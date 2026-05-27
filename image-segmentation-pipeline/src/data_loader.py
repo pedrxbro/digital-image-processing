@@ -3,6 +3,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from src.preprocessing import bgr_to_rgb, rgb_to_grayscale
+
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
@@ -31,18 +33,24 @@ def load_color_image(image_path):
     if image is None:
         raise ValueError(f"Não foi possível carregar a imagem: {image_path}")
 
-    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return bgr_to_rgb(image)
 
 
 def load_grayscale_image(image_path):
     """Carrega uma imagem em escala de cinza."""
     image_path = Path(image_path)
-    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
 
     if image is None:
         raise ValueError(f"Não foi possível carregar a imagem em escala de cinza: {image_path}")
 
-    return image
+    if image.ndim == 3:
+        if image.shape[2] == 4:
+            image = image[:, :, :3]
+
+        return rgb_to_grayscale(bgr_to_rgb(image))
+
+    return image.astype(np.uint8, copy=False)
 
 
 def describe_image(image):

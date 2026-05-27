@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,6 +30,45 @@ def show_images_grid(images, titles=None, cols=5, figsize=(15, 5), cmap=None):
 
     plt.tight_layout()
     plt.show()
+
+
+def show_comparison(images, titles, cols=4, figsize=(16, 6), cmap=None, cmaps=None, save_path=None):
+    """Exibe múltiplas imagens em grade e, opcionalmente, salva a figura."""
+    if not images:
+        raise ValueError("A lista de imagens está vazia")
+
+    if len(images) != len(titles):
+        raise ValueError("As listas de imagens e títulos devem ter o mesmo tamanho")
+
+    if cmaps is not None and len(cmaps) != len(images):
+        raise ValueError("A lista de mapas de cor deve ter o mesmo tamanho das imagens")
+
+    rows = math.ceil(len(images) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    axes = np.atleast_1d(axes).ravel()
+
+    for index, image in enumerate(images):
+        current_cmap = cmaps[index] if cmaps is not None else cmap
+        axes[index].imshow(image, cmap=current_cmap)
+        axes[index].set_title(titles[index])
+        axes[index].axis("off")
+
+    for axis in axes[len(images):]:
+        axis.axis("off")
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    if plt.get_backend().lower() == "agg":
+        plt.close(fig)
+    else:
+        plt.show()
+
+    return fig, axes
 
 
 def show_image_and_mask(image, mask, image_title="Imagem", mask_title="Máscara", figsize=(10, 5)):
