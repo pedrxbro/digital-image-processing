@@ -116,6 +116,7 @@ def rgb_to_lab(image):
         ],
         dtype=np.float64,
     )
+    # Multiplicação de matriz transposta
     xyz = linear_rgb @ rgb_to_xyz_matrix.T
 
     d65_white = np.array([0.95047, 1.00000, 1.08883], dtype=np.float64)
