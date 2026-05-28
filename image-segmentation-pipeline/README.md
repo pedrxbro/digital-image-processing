@@ -30,6 +30,14 @@ As implementações de pré-processamento e frequência ficam em `src/preprocess
 
 Nas amostras iniciais, os canais de saturação do HSV e os canais cromáticos do LAB tendem a destacar melhor as células coradas em relação ao fundo claro. O canal L do LAB ajuda a analisar variações de luminosidade, mas a equalização deve ser usada com cautela porque pode aumentar ruídos, halos e artefatos do preparo. Os filtros passa-baixa são úteis para suavização antes da segmentação, enquanto os passa-alta destacam bordas, mas também podem amplificar detalhes indesejados.
 
+## Segmentação de Células por Superpixels
+
+Nesta etapa, os superpixels gerados pelo SLIC foram usados como unidades de decisão para construir uma máscara binária inicial das células.
+
+Foram calculados atributos por superpixel, incluindo médias dos canais HSV e LAB, saturação média, luminosidade média e intensidade média. Em seguida, foram testadas estratégias de limiarização global e Otsu por superpixel implementado From Scratch.
+
+O objetivo foi classificar cada superpixel como célula ou fundo e gerar uma máscara binária inicial para posterior refinamento com morfologia matemática.
+
 ## Como executar
 
 1. Criar ambiente virtual:

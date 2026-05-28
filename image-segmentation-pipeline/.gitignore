@@ -18,5 +18,7 @@ data/processed/*
 
 outputs/figures/*
 outputs/reports/*
+outputs/masks/*
 !outputs/figures/.gitkeep
 !outputs/reports/.gitkeep
+!outputs/masks/.gitkeep
