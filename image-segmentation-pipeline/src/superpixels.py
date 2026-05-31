@@ -1,3 +1,5 @@
+from collections import deque
+
 import numpy as np
 
 
@@ -95,7 +97,69 @@ def _recompute_clusters(image, labels, clusters):
     return new_clusters
 
 
-def slic(image, num_superpixels=100, m=10, max_iter=10):
+def enforce_superpixel_connectivity(labels, min_size):
+    """Separa ilhas desconectadas e incorpora componentes muito pequenos."""
+    labels = np.asarray(labels)
+
+    if labels.ndim != 2:
+        raise ValueError("labels deve ser um array 2D.")
+
+    if min_size < 0:
+        raise ValueError("min_size deve ser nao negativo.")
+
+    height, width = labels.shape
+    connected_labels = -np.ones(labels.shape, dtype=np.int32)
+    visited = np.zeros(labels.shape, dtype=bool)
+    next_label = 0
+    offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
+
+    for start_y in range(height):
+        for start_x in range(width):
+            if visited[start_y, start_x]:
+                continue
+
+            source_label = labels[start_y, start_x]
+            queue = deque([(start_y, start_x)])
+            visited[start_y, start_x] = True
+            component = []
+            adjacent_labels = []
+
+            while queue:
+                y, x = queue.popleft()
+                component.append((y, x))
+
+                for delta_y, delta_x in offsets:
+                    neighbor_y = y + delta_y
+                    neighbor_x = x + delta_x
+
+                    if neighbor_y < 0 or neighbor_y >= height:
+                        continue
+                    if neighbor_x < 0 or neighbor_x >= width:
+                        continue
+
+                    if labels[neighbor_y, neighbor_x] == source_label:
+                        if not visited[neighbor_y, neighbor_x]:
+                            visited[neighbor_y, neighbor_x] = True
+                            queue.append((neighbor_y, neighbor_x))
+                        continue
+
+                    adjacent_label = connected_labels[neighbor_y, neighbor_x]
+                    if adjacent_label >= 0:
+                        adjacent_labels.append(int(adjacent_label))
+
+            if len(component) < min_size and adjacent_labels:
+                target_label = max(set(adjacent_labels), key=adjacent_labels.count)
+            else:
+                target_label = next_label
+                next_label += 1
+
+            for y, x in component:
+                connected_labels[y, x] = target_label
+
+    return connected_labels
+
+
+def slic(image, num_superpixels=100, m=10, max_iter=10, enforce_connectivity=True):
     """Gera um mapa 2D de rótulos de superpixels usando SLIC do zero."""
     if num_superpixels <= 0:
         raise ValueError("num_superpixels deve ser maior que zero.")
@@ -146,6 +210,10 @@ def slic(image, num_superpixels=100, m=10, max_iter=10):
 
         clusters = _recompute_clusters(image, labels, clusters)
         distances.fill(np.inf)
+
+    if enforce_connectivity:
+        min_size = max(1, int(0.25 * S * S))
+        labels = enforce_superpixel_connectivity(labels, min_size=min_size)
 
     return labels
 

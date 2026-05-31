@@ -73,6 +73,85 @@ def classify_superpixels_by_rules(features, rules, logic="and"):
     return selected_labels
 
 
+def classify_superpixels_by_class_rules(features, classes, default_class="background"):
+    """Atribui uma classe a cada superpixel usando regras ordenadas.
+
+    A primeira classe cujas regras forem satisfeitas vence. Isso permite
+    reservar primeiro classes mais específicas, como leucócitos azulados, e
+    depois classificar regiões mais abrangentes, como hemácias.
+    """
+    label_classes = {}
+
+    for feature in features:
+        label_id = int(feature["label_id"])
+        label_classes[label_id] = default_class
+
+        for class_config in classes:
+            class_name = class_config["name"]
+            rules = class_config.get("rules", [])
+            logic = class_config.get("logic", "and")
+
+            if logic not in ("and", "or"):
+                raise ValueError("logic deve ser 'and' ou 'or'.")
+
+            rule_results = []
+            for rule in rules:
+                feature_name = rule["feature"]
+                threshold = float(rule["threshold"])
+                operator = rule.get("operator", ">=")
+                value = float(feature[feature_name])
+                rule_results.append(_compare(value, threshold, operator))
+
+            matches = all(rule_results) if logic == "and" else any(rule_results)
+            if matches:
+                label_classes[label_id] = class_name
+                break
+
+    return label_classes
+
+
+def classify_pixels_by_rules(channels, rules, logic="and"):
+    """Classifica pixels usando regras sobre canais 2D com o mesmo formato."""
+    if logic not in ("and", "or"):
+        raise ValueError("logic deve ser 'and' ou 'or'.")
+
+    if not rules:
+        raise ValueError("rules nao pode ser vazio.")
+
+    channel_arrays = {}
+    expected_shape = None
+
+    for channel_name, channel in channels.items():
+        channel = np.asarray(channel)
+
+        if channel.ndim != 2:
+            raise ValueError(f"O canal {channel_name} deve ser um array 2D.")
+
+        if expected_shape is None:
+            expected_shape = channel.shape
+        elif channel.shape != expected_shape:
+            raise ValueError("Todos os canais devem ter o mesmo formato.")
+
+        channel_arrays[channel_name] = channel
+
+    rule_masks = []
+    for rule in rules:
+        channel_name = rule["channel"]
+        if channel_name not in channel_arrays:
+            raise KeyError(f"Canal nao encontrado: {channel_name}")
+
+        threshold = float(rule["threshold"])
+        operator = rule.get("operator", ">=")
+        rule_masks.append(_compare(channel_arrays[channel_name], threshold, operator))
+
+    if logic == "and":
+        result = np.logical_and.reduce(rule_masks)
+    else:
+        result = np.logical_or.reduce(rule_masks)
+
+    return result.astype(np.uint8)
+
+
 def manual_histogram(values, bins=256, value_range=None):
     """Calcula um histograma unidimensional sem usar np.histogram."""
     values = np.asarray(values, dtype=np.float64).ravel()
