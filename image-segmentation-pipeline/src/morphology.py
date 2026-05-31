@@ -1,4 +1,5 @@
 from collections import deque
+import heapq
 
 import numpy as np
 
@@ -138,6 +139,7 @@ def add_binary_padding(
 def erode_binary(
     binary_image: np.ndarray,
     structuring_element: np.ndarray,
+    padding_value: int = 0,
 ) -> np.ndarray:
     """Aplica erosão binária manual.
 
@@ -152,7 +154,12 @@ def erode_binary(
     row_offset = element_height // 2
     col_offset = element_width // 2
 
-    padded_image = add_binary_padding(binary_image, row_offset, col_offset, value=0)
+    padded_image = add_binary_padding(
+        binary_image,
+        row_offset,
+        col_offset,
+        value=padding_value,
+    )
     output = np.zeros((image_height, image_width), dtype=np.uint8)
 
     for image_row in range(image_height):
@@ -239,7 +246,9 @@ def binary_closing(
 ) -> np.ndarray:
     """Executa fechamento: dilatação seguida de erosão."""
     dilated_image = dilate_binary(binary_image, structuring_element)
-    closed_image = erode_binary(dilated_image, structuring_element)
+    # Fora da imagem nao significa fundo conhecido. No fechamento, assumir 1
+    # evita apagar objetos parcialmente visiveis nas bordas apos a dilatacao.
+    closed_image = erode_binary(dilated_image, structuring_element, padding_value=1)
     return closed_image
 
 
@@ -395,6 +404,214 @@ def connected_components(
             }
 
     return labels, components_info
+
+
+def binary_distance_transform(
+    binary_image: np.ndarray,
+    structuring_element: np.ndarray | None = None,
+) -> np.ndarray:
+    """Estima a distância ao fundo contando erosões sucessivas."""
+    current = _as_binary_image(binary_image, "binary_image")
+
+    if structuring_element is None:
+        structuring_element = create_structuring_element("cross", 3)
+
+    structuring_element = _validate_structuring_element(structuring_element)
+    distances = np.zeros(current.shape, dtype=np.int32)
+    level = 0
+
+    while np.any(current):
+        level += 1
+        distances[current > 0] = level
+        current = erode_binary(current, structuring_element)
+
+    return distances
+
+
+def watershed_markers_from_distance(
+    binary_mask: np.ndarray,
+    distance_map: np.ndarray,
+    min_distance: int = 4,
+    connectivity: int = 8,
+) -> np.ndarray:
+    """Cria marcadores em máximos locais da distância interna."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+    distance_map = np.asarray(distance_map)
+    connectivity = _validate_connectivity(connectivity)
+    offsets = _neighbor_offsets(connectivity)
+
+    if distance_map.shape != binary_mask.shape:
+        raise ValueError("distance_map deve ter o mesmo formato de binary_mask.")
+
+    if min_distance <= 0:
+        raise ValueError("min_distance deve ser maior que zero.")
+
+    height, width = binary_mask.shape
+    maxima = np.zeros(binary_mask.shape, dtype=np.uint8)
+
+    for row in range(height):
+        for col in range(width):
+            value = int(distance_map[row, col])
+            if binary_mask[row, col] == 0 or value < min_distance:
+                continue
+
+            is_local_maximum = True
+            for row_delta, col_delta in offsets:
+                neighbor_row = row + row_delta
+                neighbor_col = col + col_delta
+
+                if neighbor_row < 0 or neighbor_row >= height:
+                    continue
+                if neighbor_col < 0 or neighbor_col >= width:
+                    continue
+                if distance_map[neighbor_row, neighbor_col] > value:
+                    is_local_maximum = False
+                    break
+
+            if is_local_maximum:
+                maxima[row, col] = 1
+
+    markers, _ = connected_components(maxima, connectivity=connectivity)
+    return markers
+
+
+def watershed_markers_from_erosion(
+    binary_mask: np.ndarray,
+    erosion_iterations: int = 8,
+    connectivity: int = 8,
+) -> np.ndarray:
+    """Cria marcadores erodindo a máscara para separar regiões encostadas."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+
+    if erosion_iterations <= 0:
+        raise ValueError("erosion_iterations deve ser maior que zero.")
+
+    current = binary_mask.copy()
+    element = create_structuring_element("disk", 3)
+
+    for _ in range(int(erosion_iterations)):
+        current = erode_binary(current, element)
+
+    markers, _ = connected_components(current, connectivity=connectivity)
+    return markers
+
+
+def marker_controlled_watershed(
+    binary_mask: np.ndarray,
+    markers: np.ndarray,
+    distance_map: np.ndarray,
+    connectivity: int = 8,
+) -> np.ndarray:
+    """Separa instâncias por inundação manual guiada pela distância interna."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+    markers = np.asarray(markers, dtype=np.int32)
+    distance_map = np.asarray(distance_map)
+    connectivity = _validate_connectivity(connectivity)
+    offsets = _neighbor_offsets(connectivity)
+
+    if markers.shape != binary_mask.shape or distance_map.shape != binary_mask.shape:
+        raise ValueError("binary_mask, markers e distance_map devem ter o mesmo formato.")
+
+    output = markers.copy()
+    queued = output > 0
+    height, width = binary_mask.shape
+    queue = []
+
+    for row in range(height):
+        for col in range(width):
+            if output[row, col] > 0:
+                heapq.heappush(queue, (-int(distance_map[row, col]), row, col))
+
+    while queue:
+        _, row, col = heapq.heappop(queue)
+        current_label = int(output[row, col])
+
+        for row_delta, col_delta in offsets:
+            neighbor_row = row + row_delta
+            neighbor_col = col + col_delta
+
+            if neighbor_row < 0 or neighbor_row >= height:
+                continue
+            if neighbor_col < 0 or neighbor_col >= width:
+                continue
+            if binary_mask[neighbor_row, neighbor_col] == 0:
+                continue
+
+            neighbor_label = int(output[neighbor_row, neighbor_col])
+            if neighbor_label == 0 and not queued[neighbor_row, neighbor_col]:
+                queued[neighbor_row, neighbor_col] = True
+                heapq.heappush(
+                    queue,
+                    (-int(distance_map[neighbor_row, neighbor_col]), neighbor_row, neighbor_col),
+                )
+
+        if output[row, col] != 0:
+            continue
+
+        neighbor_labels = set()
+        for row_delta, col_delta in offsets:
+            neighbor_row = row + row_delta
+            neighbor_col = col + col_delta
+
+            if neighbor_row < 0 or neighbor_row >= height:
+                continue
+            if neighbor_col < 0 or neighbor_col >= width:
+                continue
+
+            neighbor_label = int(output[neighbor_row, neighbor_col])
+            if neighbor_label > 0:
+                neighbor_labels.add(neighbor_label)
+
+        if len(neighbor_labels) == 1:
+            output[row, col] = next(iter(neighbor_labels))
+        elif len(neighbor_labels) > 1:
+            output[row, col] = -1
+
+        if output[row, col] != 0:
+            for row_delta, col_delta in offsets:
+                neighbor_row = row + row_delta
+                neighbor_col = col + col_delta
+
+                if neighbor_row < 0 or neighbor_row >= height:
+                    continue
+                if neighbor_col < 0 or neighbor_col >= width:
+                    continue
+                if binary_mask[neighbor_row, neighbor_col] == 0:
+                    continue
+                if output[neighbor_row, neighbor_col] != 0:
+                    continue
+                if queued[neighbor_row, neighbor_col]:
+                    continue
+
+                queued[neighbor_row, neighbor_col] = True
+                heapq.heappush(
+                    queue,
+                    (-int(distance_map[neighbor_row, neighbor_col]), neighbor_row, neighbor_col),
+                )
+
+    return output
+
+
+def watershed_instances(
+    binary_mask: np.ndarray,
+    erosion_iterations: int = 8,
+    connectivity: int = 8,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Executa watershed manual e retorna instâncias, marcadores e distâncias."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+    distance_map = binary_distance_transform(binary_mask)
+    markers = watershed_markers_from_erosion(
+        binary_mask,
+        erosion_iterations=erosion_iterations,
+        connectivity=connectivity,
+    )
+    instances = marker_controlled_watershed(
+        binary_mask,
+        markers,
+        distance_map,
+        connectivity=connectivity,
+    )
+    return instances, markers, distance_map
 
 
 def filter_components_by_area(
