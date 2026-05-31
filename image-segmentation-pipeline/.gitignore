@@ -20,7 +20,10 @@ outputs/figures/*
 outputs/reports/*
 outputs/masks/*
 outputs/pipeline_tests/*
+outputs/pipeline_final/*
+outputs/final_diagnostics/*
 !outputs/figures/.gitkeep
 !outputs/reports/.gitkeep
 !outputs/masks/.gitkeep
 !outputs/pipeline_tests/.gitkeep
+!outputs/pipeline_final/.gitkeep

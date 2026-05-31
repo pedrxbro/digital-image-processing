@@ -78,3 +78,44 @@ jupyter notebook notebooks/main.ipynb
 - `notebooks`: contém o notebook principal do projeto.
 - `src`: contém funções reutilizáveis para carregamento, visualização e análise.
 - `outputs`: armazena figuras e relatórios gerados durante os experimentos.
+
+## Pipeline configuravel para hemacias
+
+A orquestracao reutilizavel esta em `src/pipeline.py`. Ela preserva a imagem RGB
+para visualizacao, mantem grayscale explicitamente e permite selecionar canais
+2D de RGB, HSV, LAB ou GRAY para segmentacao. O notebook `notebooks/main.ipynb`
+apenas configura, executa e explica o experimento.
+
+O realce de bordas usa Sobel from scratch em `src/edge_enhancement.py`. O
+preenchimento conservador de pequenos contornos e o Watershed manual ficam em
+`src/morphology.py`. A versao final usa regras sobre atributos dos superpixels
+para recuperar hemacias visiveis e palidas e excluir regioes azuladas.
+
+Relatorios detalhados, mascaras, overlays e mapas intermediarios sao gravados
+em `outputs/pipeline_final`. Cada imagem recebe sua propria pasta com
+`config.json` e `execution_report.json`. O lote tambem gera
+`batch_summary.csv` e `batch_summary.json`.
+
+### Resultado de referencia
+
+A configuracao final usa `LAB.A`, filtro passa-baixa com raio 35, SLIC com 450
+superpixels, abertura 5x5, fechamento 3x3 e Watershed com 12 erosoes para gerar
+marcadores. Na execucao validada em 31 de maio de 2026:
+
+| Imagem | Componentes antes do Watershed | Hemacias estimadas |
+|---|---:|---:|
+| `BloodImage_00340.jpg` | 18 | 27 |
+| `BloodImage_00367.jpg` | 8 | 18 |
+| `BloodImage_00368.jpg` | 5 | 27 |
+
+As contagens sao estimativas: sem mascaras de referencia, os overlays devem ser
+inspecionados e Dice/IoU nao podem ser reportados de forma honesta.
+
+Exemplos de selecao de entrada:
+
+```python
+{"input_strategy": {"channel_source": "GRAY", "selected_channel": "GRAY"}}
+{"input_strategy": {"channel_source": "HSV", "selected_channel": "S"}}
+{"input_strategy": {"channel_source": "LAB", "selected_channel": "A"}}
+{"input_strategy": {"channel_source": "LAB", "selected_channel": "B"}}
+```

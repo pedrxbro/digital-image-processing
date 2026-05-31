@@ -325,6 +325,80 @@ def fill_holes(binary_image: np.ndarray, connectivity: int = 8) -> np.ndarray:
     return filled_image.astype(np.uint8)
 
 
+def find_background_regions(binary_mask: np.ndarray, connectivity: int = 8) -> dict:
+    """Separa fundo externo e regioes internas de fundo com BFS manual."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+    background = (binary_mask == 0).astype(np.uint8)
+    labels, regions = connected_components(background, connectivity=connectivity)
+    height, width = binary_mask.shape
+    external_labels = set()
+
+    for label_id, info in regions.items():
+        for row, col in info["pixels"]:
+            if row in (0, height - 1) or col in (0, width - 1):
+                external_labels.add(label_id)
+                break
+
+    internal_labels = sorted(set(regions) - external_labels)
+    return {
+        "labels": labels,
+        "regions": regions,
+        "external_labels": sorted(external_labels),
+        "internal_labels": internal_labels,
+    }
+
+
+def detect_internal_contours_from_mask(binary_mask: np.ndarray, connectivity: int = 8) -> list[dict]:
+    """Lista buracos internos que funcionam como pequenos contornos fechados."""
+    background_info = find_background_regions(binary_mask, connectivity=connectivity)
+    contours = []
+
+    for label_id in background_info["internal_labels"]:
+        region = background_info["regions"][label_id]
+        contours.append(
+            {
+                "label_id": int(label_id),
+                "area": int(region["area"]),
+                "bbox": region["bbox"],
+                "pixels": region["pixels"],
+            }
+        )
+
+    return contours
+
+
+def fill_small_contours(
+    binary_mask: np.ndarray,
+    max_area: int,
+    connectivity: int = 8,
+) -> tuple[np.ndarray, dict]:
+    """Preenche somente buracos internos com area menor ou igual ao limite."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+
+    if max_area < 0:
+        raise ValueError("max_area deve ser nao negativo.")
+
+    contours = detect_internal_contours_from_mask(binary_mask, connectivity=connectivity)
+    filled_mask = binary_mask.copy()
+    filled_areas = []
+
+    for contour in contours:
+        if contour["area"] > max_area:
+            continue
+
+        for row, col in contour["pixels"]:
+            filled_mask[row, col] = 1
+        filled_areas.append(int(contour["area"]))
+
+    return filled_mask, {
+        "detected_contours": len(contours),
+        "filled_contours": len(filled_areas),
+        "filled_areas": filled_areas,
+        "max_contour_area_to_fill": int(max_area),
+        "connectivity": int(connectivity),
+    }
+
+
 def connected_components(
     binary_image: np.ndarray,
     connectivity: int = 8,
@@ -432,6 +506,7 @@ def watershed_markers_from_distance(
     binary_mask: np.ndarray,
     distance_map: np.ndarray,
     min_distance: int = 4,
+    min_separation: int = 20,
     connectivity: int = 8,
 ) -> np.ndarray:
     """Cria marcadores em máximos locais da distância interna."""
@@ -445,9 +520,12 @@ def watershed_markers_from_distance(
 
     if min_distance <= 0:
         raise ValueError("min_distance deve ser maior que zero.")
+    if min_separation <= 0:
+        raise ValueError("min_separation deve ser maior que zero.")
 
     height, width = binary_mask.shape
-    maxima = np.zeros(binary_mask.shape, dtype=np.uint8)
+    component_labels, _ = connected_components(binary_mask, connectivity=connectivity)
+    candidates = []
 
     for row in range(height):
         for col in range(width):
@@ -469,10 +547,62 @@ def watershed_markers_from_distance(
                     break
 
             if is_local_maximum:
-                maxima[row, col] = 1
+                candidates.append((value, row, col))
 
-    markers, _ = connected_components(maxima, connectivity=connectivity)
+    markers = np.zeros(binary_mask.shape, dtype=np.int32)
+    selected_by_component = {}
+    next_label = 0
+    minimum_squared_distance = int(min_separation) ** 2
+
+    for _, row, col in sorted(candidates, reverse=True):
+        component_label = int(component_labels[row, col])
+        selected_points = selected_by_component.setdefault(component_label, [])
+        is_far_enough = all(
+            (row - selected_row) ** 2 + (col - selected_col) ** 2
+            >= minimum_squared_distance
+            for selected_row, selected_col in selected_points
+        )
+        if not is_far_enough:
+            continue
+
+        next_label += 1
+        markers[row, col] = next_label
+        selected_points.append((row, col))
+
     return markers
+
+
+def ensure_watershed_marker_coverage(
+    binary_mask: np.ndarray,
+    markers: np.ndarray,
+    distance_map: np.ndarray,
+    connectivity: int = 8,
+) -> np.ndarray:
+    """Garante ao menos um marcador para cada componente da mascara."""
+    binary_mask = _as_binary_image(binary_mask, "binary_mask")
+    markers = np.asarray(markers, dtype=np.int32)
+    distance_map = np.asarray(distance_map)
+
+    if markers.shape != binary_mask.shape or distance_map.shape != binary_mask.shape:
+        raise ValueError("binary_mask, markers e distance_map devem ter o mesmo formato.")
+
+    component_labels, components = connected_components(binary_mask, connectivity=connectivity)
+    covered_components = set(component_labels[markers > 0].tolist())
+    output = markers.copy()
+    next_label = int(np.max(output, initial=0))
+
+    for component_label, info in components.items():
+        if component_label in covered_components:
+            continue
+
+        peak_row, peak_col = max(
+            info["pixels"],
+            key=lambda pixel: int(distance_map[pixel[0], pixel[1]]),
+        )
+        next_label += 1
+        output[peak_row, peak_col] = next_label
+
+    return output
 
 
 def watershed_markers_from_erosion(
@@ -501,6 +631,7 @@ def marker_controlled_watershed(
     markers: np.ndarray,
     distance_map: np.ndarray,
     connectivity: int = 8,
+    gradient_map: np.ndarray | None = None,
 ) -> np.ndarray:
     """Separa instâncias por inundação manual guiada pela distância interna."""
     binary_mask = _as_binary_image(binary_mask, "binary_mask")
@@ -511,6 +642,10 @@ def marker_controlled_watershed(
 
     if markers.shape != binary_mask.shape or distance_map.shape != binary_mask.shape:
         raise ValueError("binary_mask, markers e distance_map devem ter o mesmo formato.")
+    if gradient_map is not None:
+        gradient_map = np.asarray(gradient_map)
+        if gradient_map.shape != binary_mask.shape:
+            raise ValueError("gradient_map deve ter o mesmo formato de binary_mask.")
 
     output = markers.copy()
     queued = output > 0
@@ -520,10 +655,11 @@ def marker_controlled_watershed(
     for row in range(height):
         for col in range(width):
             if output[row, col] > 0:
-                heapq.heappush(queue, (-int(distance_map[row, col]), row, col))
+                gradient = int(gradient_map[row, col]) if gradient_map is not None else 0
+                heapq.heappush(queue, (gradient, -int(distance_map[row, col]), row, col))
 
     while queue:
-        _, row, col = heapq.heappop(queue)
+        _, _, row, col = heapq.heappop(queue)
         current_label = int(output[row, col])
 
         for row_delta, col_delta in offsets:
@@ -540,10 +676,8 @@ def marker_controlled_watershed(
             neighbor_label = int(output[neighbor_row, neighbor_col])
             if neighbor_label == 0 and not queued[neighbor_row, neighbor_col]:
                 queued[neighbor_row, neighbor_col] = True
-                heapq.heappush(
-                    queue,
-                    (-int(distance_map[neighbor_row, neighbor_col]), neighbor_row, neighbor_col),
-                )
+                gradient = int(gradient_map[neighbor_row, neighbor_col]) if gradient_map is not None else 0
+                heapq.heappush(queue, (gradient, -int(distance_map[neighbor_row, neighbor_col]), neighbor_row, neighbor_col))
 
         if output[row, col] != 0:
             continue
@@ -584,10 +718,8 @@ def marker_controlled_watershed(
                     continue
 
                 queued[neighbor_row, neighbor_col] = True
-                heapq.heappush(
-                    queue,
-                    (-int(distance_map[neighbor_row, neighbor_col]), neighbor_row, neighbor_col),
-                )
+                gradient = int(gradient_map[neighbor_row, neighbor_col]) if gradient_map is not None else 0
+                heapq.heappush(queue, (gradient, -int(distance_map[neighbor_row, neighbor_col]), neighbor_row, neighbor_col))
 
     return output
 
